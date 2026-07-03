@@ -1,0 +1,132 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String         @id @default(uuid())
+  email         String         @unique
+  passwordHash  String
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  organizations Organization[] @relation("UserOrgs")
+}
+
+model Organization {
+  id        String    @id @default(uuid())
+  name      String
+  createdAt DateTime  @default(now())
+  users     User[]    @relation("UserOrgs")
+  projects  Project[]
+}
+
+model Project {
+  id             String       @id @default(uuid())
+  name           String
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
+  queues         Queue[]
+}
+
+enum RetryPolicy {
+  FIXED
+  LINEAR
+  EXPONENTIAL
+}
+
+model Queue {
+  id               String      @id @default(uuid())
+  name             String
+  projectId        String
+  project          Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  priority         Int         @default(0) // Higher number = higher priority
+  concurrencyLimit Int         @default(10)
+  retryPolicy      RetryPolicy @default(EXPONENTIAL)
+  maxRetries       Int         @default(3)
+  isPaused         Boolean     @default(false)
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  jobs             Job[]
+}
+
+enum JobStatus {
+  QUEUED
+  SCHEDULED
+  CLAIMED
+  RUNNING
+  COMPLETED
+  FAILED
+  DLQ
+}
+
+model Job {
+  id             String         @id @default(uuid())
+  queueId        String
+  queue          Queue          @relation(fields: [queueId], references: [id], onDelete: Cascade)
+  payload        Json
+  status         JobStatus      @default(QUEUED)
+  priority       Int            @default(0)
+  runAt          DateTime?      // For delayed/scheduled jobs
+  cronExpression String?        // For recurring jobs
+  retryCount     Int            @default(0)
+  workerId       String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  executions     JobExecution[]
+  deadLetter     DeadLetterQueue?
+
+  @@index([status, runAt])
+  @@index([queueId, status, priority])
+}
+
+model JobExecution {
+  id         String    @id @default(uuid())
+  jobId      String
+  job        Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  workerId   String
+  status     JobStatus
+  startedAt  DateTime  @default(now())
+  completedAt DateTime?
+  error      String?
+  metrics    Json?     // e.g. memory usage, duration ms
+  logs       JobLog[]
+}
+
+model JobLog {
+  id             String       @id @default(uuid())
+  jobExecutionId String
+  execution      JobExecution @relation(fields: [jobExecutionId], references: [id], onDelete: Cascade)
+  level          String       // INFO, WARN, ERROR
+  message        String
+  timestamp      DateTime     @default(now())
+}
+
+model Worker {
+  id            String            @id @default(uuid())
+  hostname      String
+  status        String            @default("ACTIVE") // ACTIVE, DEAD
+  lastHeartbeat DateTime          @default(now())
+  createdAt     DateTime          @default(now())
+  heartbeats    WorkerHeartbeat[]
+}
+
+model WorkerHeartbeat {
+  id          String   @id @default(uuid())
+  workerId    String
+  worker      Worker   @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  timestamp   DateTime @default(now())
+  loadMetrics Json?    // CPU, RAM info
+}
+
+model DeadLetterQueue {
+  id      String   @id @default(uuid())
+  jobId   String   @unique
+  job     Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  reason  String
+  movedAt DateTime @default(now())
+}
